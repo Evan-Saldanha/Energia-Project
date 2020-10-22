@@ -1,0 +1,925 @@
+---
+title: "Analysis of Energia's Data set"
+author: "Evan Ganson Saldanha"
+date: "14/04/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE} 
+#Global chunk option
+knitr::opts_chunk$set(echo = FALSE, results = "hide", warning = FALSE, message = FALSE, error = FALSE, fig.align = 'center',cache = TRUE)
+```
+
+##Objective:
+
+To discover the factors affecting the purchase of electricity by Energia on ISEM market and to optimise the buying by predicting the best market for every time period.   
+
+```{r message=FALSE, warning = FALSE}
+#Installing and Loading all the necessary libararies
+
+
+if(!require(rpart.plot)) install.packages("rpart.plot")
+if(!require(DMwR)) install.packages("DMwR")
+if(!require(naivebayes)) install.packages("naivebayes")
+if(!require(caTools)) install.packages("caTools")
+if(!require(ggplot2)) install.packages("ggplot2")
+if(!require(tidyverse)) install.packages("tidyverse")
+if(!require(dplyr)) install.packages("dplyr")
+if(!require(caret)) install.packages("caret")
+if(!require(corrplot)) install.packages("corrplot")
+if(!require(funModeling)) install.packages("funModeling")
+if(!require(Hmisc)) install.packages("Hmisc")
+if(!require(Matrix)) install.packages("Matrix")
+if(!require(dummies)) install.packages("dummies")
+if(!require(e1071)) install.packages("e1071")
+if(!require(ranger)) install.packages("ranger")
+if(!require(factoextra)) install.packages("factoextra")
+if(!require(FactoMineR)) install.packages("FactoMineR")
+if(!require(gridExtra)) install.packages("gridExtra")
+if(!require(NbClust)) install.packages("NbClust")
+if(!require(tinytex)) install.packages("tinytex")
+
+
+library(tidyverse)
+library(ggplot2)
+library(corrplot)
+library(funModeling)
+library(Hmisc)
+library(Matrix)
+library(dplyr)
+library(caret)
+library(dummies)
+library(e1071)
+library(ranger)
+library(factoextra)
+library(FactoMineR)
+library(tinytex)
+library(rpart.plot)
+library(NbClust)
+library(DMwR)
+library(rpart)
+library(naivebayes)
+library(caTools)
+library(gridExtra)
+
+library(mlbench)
+library(caret)
+library(RANN)
+library(mice)
+library(lubridate)
+library(knitr)
+library(kableExtra)
+#memory.limit(size=56000)
+
+```
+
+##Exploring Dataset:
+
+The data set consisted of 8,448 observation and 24 variable, of which 3 are charecter, 20 are numeric and one time variable. The observations under *Period.ending* were a time period which began from 30-09-2018 23:30 to 25-03-2019 23:00 which was in PosixCt format. The below table displays the first few rows of the whole data set:
+
+
+
+```{r}
+#Reading the CSV file "QUB_Data.xlsx" with Energia's data from local folder
+sheets <- c("Wind","Demand", "Actual Prices")
+sheet_list <- lapply(sheets, function(x) readxl::read_xlsx("QUB_Data.xlsx",sheet=x)) 
+head(sheet_list)
+
+#Since there are 3 different sheets, assigning them to appropriate variable.
+wind_data <- sheet_list[1]
+demand_data <- sheet_list[2]
+prices_data <- sheet_list[3]
+
+```
+```{r }
+#merging all 3 different sheets to one
+merge_half <- merge(wind_data,demand_data,by = "Period.Ending")
+merged_data <- merge(merge_half,prices_data,by = "Period.Ending")
+#head(merged_data)
+
+#converting Period.Ending column to PosixCT format and arranging it
+merged_data$Period.Ending <- as.POSIXct(merged_data$Period.Ending, format="%d/%m/%Y %H:%M")
+merged_data <- arrange(merged_data, merged_data$Period.Ending)
+head(merged_data)
+
+#creating a copy of the merged data
+energia_data <- merged_data
+#skimr::skim(energia_data)
+```
+
+```{r results=TRUE, fig.width=3.1}
+merged_temp <- merged_data
+colnames(merged_temp)[colnames(merged_temp)=="DAM.Forecast.ISEMDEMAND..FC.at.10am.D.1."] <- "DAM.Forecast.DEMAND"
+colnames(merged_temp)[colnames(merged_temp)=="IDA1.Forecast.ISEMDEMAND"] <- "IDA1.Forecast.DEMAND"
+colnames(merged_temp)[colnames(merged_temp)=="IDA2.Forecast.ISEMDEMAND"] <- "IDA2.Forecast.DEMAND"
+colnames(merged_temp)[colnames(merged_temp)=="IDA3.Forecast.ISEMDEMAND"] <- "IDA3.Forecast.DEMAND"
+colnames(merged_temp)[colnames(merged_temp)=="Actual.ISEMDEMAND"] <- "Actual.DEMAND"
+colnames(merged_temp)[colnames(merged_temp)=="Actual.ISEMWIND"] <- "Actual.WIND"
+colnames(merged_temp)[colnames(merged_temp)=="DAM.Forecast.ISEMWIND"] <- "DAM.Forecast.WIND"
+colnames(merged_temp)[colnames(merged_temp)=="IDA1.Forecast.ISEMWIND"] <- "IDA1.Forecast.WIND"
+colnames(merged_temp)[colnames(merged_temp)=="IDA2.Forecast.ISEMWIND"] <- "IDA2.Forecast.WIND"
+colnames(merged_temp)[colnames(merged_temp)=="IDA3.Forecast.ISEMWIND"] <- "IDA3.Forecast.WIND"
+
+
+table_1 <- merged_temp[,1:7] 
+table_2 <- merged_temp[,8:16] 
+
+knitr::kable(head(table_1,12), caption = "Energia's data-set",format = "latex", booktabs = TRUE) %>% 
+  kable_styling(latex_options = c("scale_down","hold_position"))
+knitr::kable(head(table_2,12),format = "latex", booktabs = TRUE, caption = "Energia's data-set") %>% 
+  kable_styling(latex_options = c("scale_down","hold_position"))
+```
+
+As the table 1 and 2 shows above, the data is for 4 different auction window on ISEM market namely: DAM, IDA1, IDA2 and IDA3. The DAM and IDA1 functions for 24 hours starting from 23:00:00 whereas the IDA2's acution period is for 12 hours staring 11:00:00 and IDA3's aution period for 6 hours starting from 17:00:00. All units are in MW and the prices in euros. The BM (Balancing market) prices are charged when Energia fails to buy required quantity of electricity.
+
+##Exploratory Data Analysis
+###Tidying the data:
+
+Since the data was not tidy for visual representation, the complex variables were broken down to form few extra variables. The net demand calculated was the difference between the demand and wind. The column Period.Ending was further split into, *Time_hr* : time period from Period.Ending, *Time* : morning, afternoon, evening and night, *WeekDay* : 7 days of the week.
+
+```{r}
+#Calculating net demand by subtracting wind from demand.
+energia_data$Actual_NetDemand <- energia_data$Actual.ISEMDEMAND-energia_data$Actual.ISEMWIND
+energia_data$DAM_FC_NetDemand <- energia_data$DAM.Forecast.ISEMDEMAND..FC.at.10am.D.1.-energia_data$DAM.Forecast.ISEMWIND
+energia_data$IDA1_FC_NetDemand <- energia_data$IDA1.Forecast.ISEMDEMAND-energia_data$IDA1.Forecast.ISEMWIND
+energia_data$IDA2_FC_NetDemand <- energia_data$IDA2.Forecast.ISEMDEMAND-energia_data$IDA2.Forecast.ISEMWIND
+energia_data$IDA3_FC_NetDemand <- energia_data$IDA3.Forecast.ISEMDEMAND-energia_data$IDA3.Forecast.ISEMWIND
+
+head(energia_data)
+
+```
+
+```{r }
+#Splitting the Period ending column into date and time and adding the new column to dataset
+energia_data$Time_hr <- format(as.POSIXct(energia_data$Period.Ending) ,format = "%H:%M:%S") 
+time <- as.POSIXct(strptime(energia_data$Time_hr,"%H:%M"),"UTC")
+
+#Grouping time into time of day: morning, afternoon, evening and night
+x=as.POSIXct(strptime(c("000000","050000","110000","160000","190000","235959"),
+                      "%H%M%S"),"UTC")
+labs=c("night","morning","afternoon","evening","night")
+energia_data$Time <-  labs[findInterval(time,x)]
+
+#Adding days of the week column
+energia_data$WeekDay <- weekdays(as.Date(energia_data$Period.Ending))
+head(energia_data)
+```
+
+```{r include=FALSE}
+#Plotting demand based on time of the day for all 4 markets and actual demand
+ggplot(data = energia_data, aes(x=Time)) + 
+  geom_point(aes( y=energia_data$Actual.ISEMDEMAND,colour="red"), stat = "identity")
+
+ggplot(data = energia_data, aes(x=Time)) + 
+  geom_point(aes( y=DAM_FC_NetDemand,colour="blue"), stat = "identity")
+
+ggplot(data = energia_data, aes(x=Time)) + 
+  geom_point(aes( y=IDA1_FC_NetDemand,colour="red"), stat = "identity")
+
+ggplot(data = energia_data, aes(x=Time)) + 
+  geom_point(aes( y=IDA2_FC_NetDemand,colour="blue"), stat = "identity")
+
+ggplot(data = energia_data, aes(x=Time)) + 
+  geom_point(aes( y=IDA3_FC_NetDemand,colour="blue"), stat = "identity")
+
+
+
+```
+
+```{r results=TRUE, fig.width=3}
+merged_temp2 <- energia_data
+
+table_3 <- merged_temp2[,17:24] 
+
+knitr::kable(head(table_3,8), caption = "Variables added to data-set after tidying",format = "latex", booktabs = TRUE) %>% 
+  kable_styling(latex_options = c("scale_down","hold_position"))
+
+```
+Analysis is done on each market seperately, hence the whole data set is broken down into 4 individual data sets with respect to markets (DAM, IDA1, IDA2, IDA3). Every set consists the respective forecasted data, actual data, price and time factors.
+  
+
+```{r}
+#Creating seperate data set for every market: DAM, IDA1, IDA2, IDA3
+
+#DAM
+DAM_df <- energia_data %>%
+  select(DAM.Forecast.ISEMWIND, DA.Price, DAM.Forecast.ISEMDEMAND..FC.at.10am.D.1.,Actual_NetDemand, DAM_FC_NetDemand, WeekDay, Period.Ending, Time_hr,Time) %>%
+  filter(!is.na(DA.Price))
+
+head(DAM_df)
+
+#IDA1
+IDA1_df <- energia_data %>%
+  select(IDA1.Forecast.ISEMWIND, IDA1.Price, IDA1.Forecast.ISEMDEMAND,Actual_NetDemand, IDA1_FC_NetDemand, WeekDay, Period.Ending, Time_hr,Time) %>%
+  filter(!is.na(IDA1.Price))
+
+head(IDA1_df)
+
+#IDA2
+IDA2_df <- energia_data %>%
+  select(IDA2.Forecast.ISEMWIND, IDA2.Price, IDA2.Forecast.ISEMDEMAND,Actual_NetDemand, IDA2_FC_NetDemand, WeekDay, Period.Ending, Time_hr,Time) %>%
+  filter(!is.na(IDA2.Price))
+
+head(IDA2_df)
+
+#IDA3
+IDA3_df <- energia_data %>%
+  select(IDA3.Forecast.ISEMWIND, IDA3.Price, IDA3.Forecast.ISEMDEMAND,Actual_NetDemand, IDA3_FC_NetDemand, WeekDay, Period.Ending, Time_hr,Time) %>%
+  filter(!is.na(IDA3.Price))
+
+head(IDA3_df)
+```
+
+```{r results=TRUE, fig.width=3}
+#merged_temp2 <- energia_data
+
+#table_3 <- merged_temp2[,17:24] 
+# 
+# knitr::kable(head(DAM_df), caption = "DAM dataset",format = "latex", booktabs = TRUE) %>% 
+#   kable_styling(latex_options = c("scale_down","hold_position"))
+# 
+# knitr::kable(head(IDA1_df), caption = "IDA1 dataset",format = "latex", booktabs = TRUE) %>% 
+#   kable_styling(latex_options = c("scale_down","hold_position"))
+# 
+# knitr::kable(head(IDA2_df), caption = "IDA2 dataset",format = "latex", booktabs = TRUE) %>% 
+#   kable_styling(latex_options = c("scale_down","hold_position"))
+# 
+# knitr::kable(head(IDA3_df), caption = "IDA3 dataset",format = "latex", booktabs = TRUE) %>% 
+#   kable_styling(latex_options = c("scale_down","hold_position"))
+
+```
+
+###Visualization:
+```{r fig.height=2}
+energia_temp1 <- energia_data %>%
+  dplyr::mutate(year = lubridate::year(Period.Ending),
+                month = lubridate::month(Period.Ending),
+                day = lubridate::day(Period.Ending))
+
+#energia_copy2 <- energia_copy2 %>% mutate( day = weekdays(as.Date(Period.Ending)))
+
+wind_per_day <- energia_temp1 %>%  group_by(energia_temp1$day) %>% summarise(wind <-mean(Actual.ISEMWIND) )
+#par(mfrow=c(1,2))
+#plot(wind_per_day,type = "o", col = "red", xlab = "Days", ylab = "Wind", main="Fig 1:Average wind on each day")
+
+demand_per_day <- energia_temp1 %>%  group_by(energia_temp1$day) %>% summarise(wind <-mean(Actual.ISEMDEMAND) )
+
+#plot(demand_per_day,type = "o", col = "green", xlab = "Days", ylab = "Demand",main="Fig 2: Average demand on each day")
+#By plotting these over a line graph, we can see that, the wind keeps raising as the days pass to the middle of the month, and then decreases by the end of the month (Fig 1).
+#The demand seems to be high which is above 4400MW except for the late mid of the month(around 23rd) as shown in Fig 2.
+
+```
+The two main factors on which the prices depend are the electricity produced by the wind and the demand of electricity by the customers. The below graph(Fig 3), respresents the demand of the customers of Energia on every month. The x axis represents the electricity in MW and the Y axis is the count of demand for that MW. The plot describes that, in the month of December the demand is highest of all other months followed by February. The cause of the demand rise may be due to the festive season in those two months.
+
+```{r fig.height=3}
+ggplot(energia_data,aes(x = Actual.ISEMDEMAND, fill = factor(months(Period.Ending))) ) +
+  ggtitle('Fig 3: Distribution of Actual Demand by Month') +
+  labs(x = 'Actual Demand', y = 'Value', fill = 'Month' )+
+  geom_histogram()
+```
+The wind during December and February is also high which is interpreted from Fig 4, eventhough the electricity unit produced does not exceed 4000MW, the actual demand resides between 3000MW to 6500MW, which means that there is a high chance for buying the electricity from the ISEM market. 
+
+```{r fig.height=3}
+ggplot(energia_data,aes(x = Actual.ISEMWIND, fill = factor(months(Period.Ending))) ) +
+  ggtitle('Fig 4: Distribution of Actual Wind by Month') +
+  labs(x = 'Actual Wind', y = 'Value', fill = 'Month' )+
+  geom_histogram()
+```
+
+The time in hours and minutes, was then classified to 'Times of the day'. The plot below (Fig 5), shows that the demand in the afternoon is high compared to rest of the day time. The bars in blue which represent morning demand, seems to have high count, but of low electricity unit. But the graph places the demand of evening in the second as the power level is high even though the count is less. The afternoon rise must be due to the running of all the industries and other work environment technologies. Since major proportion of people rest during night, the demand is very low for electricity at nights.
+```{r fig.height=4}
+ggplot(energia_data, aes(x=Actual.ISEMDEMAND, fill= Time))+
+  geom_histogram()+
+  ggtitle('Fig 5: Distribution of Actual demand by Times of the day') 
+```
+
+The production of energy by the generators using the wind is also very high during the afternoons. The nights are calmer and the count of electricity is not very high. The mornings have high count but have lower energy generation compared to evening. (Fig 6)
+
+```{r fig.height =3.5}
+ggplot(energia_data, aes(x=Actual.ISEMWIND, fill= Time))+
+  geom_histogram()+
+  ggtitle('Fig 6: Distribution of Actual wind by Times of the day')
+```
+Based on the prices of every market, lets find out which is more suitable for buying using the visualization technique. In the below graph (Fig 7), it clearly indicates that IDA1 is more optimal than DAM, IDA2, IDA3 prices. 
+
+```{r}
+
+dam_temp1 <- DAM_df %>%
+  dplyr::mutate(year = lubridate::year(Period.Ending),
+                month = lubridate::month(Period.Ending),
+                day = lubridate::day(Period.Ending))
+
+ida1_temp1 <- IDA1_df %>%
+  dplyr::mutate(year = lubridate::year(Period.Ending),
+                month = lubridate::month(Period.Ending),
+                day = lubridate::day(Period.Ending))
+
+ida2_temp1 <- IDA2_df %>%
+  dplyr::mutate(year = lubridate::year(Period.Ending),
+                month = lubridate::month(Period.Ending),
+                day = lubridate::day(Period.Ending))
+
+ida3_temp1 <- IDA3_df %>%
+  dplyr::mutate(year = lubridate::year(Period.Ending),
+                month = lubridate::month(Period.Ending),
+                day = lubridate::day(Period.Ending))
+
+
+dam_filter <- dam_temp1 %>%
+  group_by(day) %>%
+  summarise(price = mean(DA.Price))
+
+ida1_filter <- ida1_temp1 %>%
+   group_by(day) %>%
+  summarise(price = mean(IDA1.Price))
+
+ida2_filter <- ida2_temp1 %>%
+   group_by(day) %>%
+  summarise(price = mean(IDA2.Price))
+
+ida3_filter <- ida3_temp1 %>%
+   group_by(day) %>%
+  summarise(price = mean(IDA3.Price))
+
+plot(dam_filter, type='o', col='green', xlab='Month', ylab='Price', main = "Fig 7: Months vs Prices for all ISEM market" ) +
+  lines(ida1_filter, type='o', col='blue') +
+  lines(ida2_filter, type = 'o', col = 'red')+
+  lines(ida3_filter, type = 'o', col = 'yellow')
+
+legend(24, 62, legend=c("DAM prices", "IDA1 prices", "IDA2 prices", "IDA3 prices"),
+       col=c( "green","blue","red","yellow"),lty=1:2, cex=0.8)
+
+```
+##Modelling
+
+In CARET package of R, all models are trained using the `train()` function, while the `predict()` function is used for making predictions. The `trainControl()` function is used to create a set of configuration options known as a control object, which guides the train() function. These options allow for the management of model evaluation criteria such as the resampling strategy and the measure used for choosing the best model. 
+Having the better understanding of the data by EDA and tidying the data for each market, the process of fitting a model takes place.  
+
+###DAM market
+####Linear model for DAM:
+
+The data is spilt into train and test data in which the train dataset consist of first 5 months(October,2018 to February,2019) data and test has the information of March, 2019 for prediction. Since this is a regression problem, Linear regression model is being fit to the train data. We note the R-squared values which is a statistical measure of how close the data are to the fitted regression line. The R-squared value for Linear model for DAM is 0.6357 and the important variables that influence this model are (see Fig 8):
+
+```{r}
+##DAM
+###Linear model for DAM
+#Splitting data into train and test.
+#train data : 5months data from october, 2018 to Feb,2019
+train_dam <- DAM_df %>% filter(Period.Ending<"2019-03-01")
+
+#test data : 1 month data (March 2019), to be predicted
+test_dam <- DAM_df %>% filter(Period.Ending>="2019-03-01")
+
+#splitting the response variable from rest of the columns
+DAM_trainX <- train_dam %>%
+  select(-DA.Price)
+
+DAM_trainY <- train_dam %>%
+  select(DA.Price) %>%
+  pull()
+
+# create train/test indexes which will be used in 5-Fold CV
+DAM_Folds <- createFolds(DAM_trainY, k=5)
+
+# create unique configuration which will be shared across all regression models 
+DAM_ctrl <- trainControl(
+  method = 'cv',
+  number = 5,
+  index = DAM_Folds,
+  verboseIter = TRUE,
+  savePredictions = TRUE,
+  preProcOptions = list(thresh = 0.8)
+)
+```
+
+
+```{r fig.height=3.5}
+#Model
+set.seed(123)
+#Linear Regression - DAM
+model_lm_DAM <- train(
+  x = DAM_trainX, # predictors dataset
+  y = DAM_trainY, # response variable
+  method = "lm", # ML algorithm: rpart, knn, nb, ranger, glm, lm, etc. 
+  trControl = DAM_ctrl, # training configuration
+  preProcess = c("zv", "center", "scale") # zv - remove predictors with zero variance
+                                          # center, scale - centering and scaling data 
+)
+model_lm_DAM
+plot(varImp(model_lm_DAM),8, main="Fig 8: Important Variable of LM for DAM")
+summary(model_lm_DAM$finalModel)
+```
+####Random Forest for DAM
+
+Since the R-squared value of Linear model was not satisfactory, another regression model called Random forest is introduced on the training set. The R-squared value for this model is 0.821864 and the important variables that influence this model are (see Fig 9):
+
+```{r fig.height=3.5}
+model_ranger_DAM <- train(
+  x = DAM_trainX, # predictors dataset
+  y = DAM_trainY, # response variable
+  method = "ranger", # ML algorithm: rpart, knn, nb, ranger, glm, lm, etc. 
+  trControl = DAM_ctrl, # training configuration
+  importance = "impurity",
+  preProcess = c("zv", "center", "scale") # zv - remove predictors with zero variance
+                                          # center, scale - centering and scaling data 
+)
+
+model_ranger_DAM
+plot(varImp(model_ranger_DAM),main="Fig 9: Important Variable of Random Forest for DAM")
+```
+
+
+
+####Comparision for DAM
+
+Using the resampling method to compare the two models, the below dotplot (Fig 9) describes that the Random forest have better accuracy than the Linear model.
+
+```{r fig.height=4}
+#Resample - DAM
+DAM_resample <- resamples(
+  list(
+    lm_default = model_lm_DAM,
+    ranger_default = model_ranger_DAM
+  )
+)
+
+summary(DAM_resample)
+#plotting the comparisions for DAM
+
+dotplot(DAM_resample, main = "Fig 10 Dot plot: Resample for DAM")
+
+```
+```{r include=FALSE}
+#bw plot for the resampled data
+bwplot(DAM_resample)
+```
+
+
+
+
+
+###IDA1
+####Linear model for IDA1:
+
+The IDA1 data set is spilt into train and test data in which the train dataset consist of first 5 months(October,2018 to February,2019) data and test has the data of March, 2019 for prediction. Linear regression models are being fit to the train data. We consider the R-squared values which is a statistical measure of how close the data are to the fitted regression line. The R-squared value for Linear model for IDA1 is 0.6108 and the important variables that influence this model are (see Fig 11):
+
+```{r}
+#Splitting data into train and test.
+#train data : 5months data from october, 2018 to Feb,2019
+train_ida1 <- IDA1_df %>% filter(Period.Ending<"2019-03-01")
+
+#test data : 1 month data (March 2019), to be predicted
+test_ida1 <- IDA1_df %>% filter(Period.Ending>="2019-03-01")
+
+#splitting train into respinse variable and rest of the columns
+IDA1_trainX <- train_ida1 %>%
+  select(-IDA1.Price)
+
+IDA1_trainY <- train_ida1 %>%
+  select(IDA1.Price) %>%
+  pull()
+
+# create train/test indexes which will be used in 5-Fold CV
+IDA1_Folds <- createFolds(IDA1_trainY, k=5)
+
+# create unique configuration which will be shared across all regression models 
+IDA1_ctrl <- trainControl(
+  method = 'cv',
+  number = 5,
+  index = IDA1_Folds,
+  verboseIter = TRUE,
+  savePredictions = TRUE,
+  preProcOptions = list(thresh = 0.8)
+)
+```
+
+
+```{r fig.height=3}
+#Model
+set.seed(123)
+#Linear Regression - IDA1
+model_lm_IDA1 <- train(
+  x = IDA1_trainX, # predictors dataset
+  y = IDA1_trainY, # response variable
+  method = "lm", # ML algorithm: rpart, knn, nb, ranger, glm, lm, etc. 
+  trControl = IDA1_ctrl, # training configuration
+  preProcess = c("zv", "center", "scale") # zv - remove predictors with zero variance
+                                          # center, scale - centering and scaling data 
+)
+model_lm_IDA1
+plot(varImp(model_lm_IDA1),8, main="Fig 11: Important Variable of LM for IDA1")
+summary(model_lm_IDA1$finalModel)
+```
+
+
+####Random Forest for IDA1
+
+Since the R-squared value of Linear model was nearly half,  Random forest is introduced on the training set to solve this regression problem. The R-squared value for this model is 0.7930251 and the important variables that influence this model are (see Fig 12):
+```{r fig.height=3}
+model_ranger_IDA1 <- train(
+  x = IDA1_trainX, # predictors dataset
+  y = IDA1_trainY, # response variable
+  method = "ranger", # ML algorithm: rpart, knn, nb, ranger, glm, lm, etc. 
+  trControl = IDA1_ctrl, # training configuration
+  importance = "impurity",
+  preProcess = c("zv", "center", "scale") # zv - remove predictors with zero variance
+                                          # center, scale - centering and scaling data 
+)
+
+model_ranger_IDA1
+plot(varImp(model_ranger_IDA1),main="Fig 12: Important Variable of Random Forest for IDA1")
+```
+
+
+####Comparision for IDA1
+
+Using the resampling method to compare the two models applied on IDA1, the below dotplot (Fig 13) describes that the Random forest have better accuracy than the Linear model.
+
+```{r fig.height=3.5}
+#Resample - IDA1
+IDA1_resample <- resamples(
+  list(
+    lm_default = model_lm_IDA1,
+    ranger_default = model_ranger_IDA1
+  )
+)
+
+summary(IDA1_resample)
+dotplot(IDA1_resample, main = "Fig 13 Dot plot: Resample for IDA1")
+```
+
+```{r include=FALSE}
+#bw plot for IDA1
+bwplot(IDA1_resample)
+```
+
+
+###IDA2
+####Linear model for IDA2:
+
+The train and test dataset of IDA2 consisted of first 5 months(October,2018 to February,2019) entries and the data of March, 2019 respectively. Linear regression models are being fit to the train. The R-squared value for Linear model for IDA2 is 0.5529. The variables that influence this model are as shown in the below plot (see Fig 14):
+```{r}
+#Splitting data into train and test.
+#train data : 5months data from october, 2018 to Feb,2019
+train_ida2 <- IDA2_df %>% filter(Period.Ending<"2019-03-01")
+
+#test data : 1 month data (March 2019), to be predicted
+test_ida2 <- IDA2_df %>% filter(Period.Ending>="2019-03-01")
+
+#splitting train into response variable and rest
+IDA2_trainX <- train_ida2 %>%
+  select(-IDA2.Price)
+
+IDA2_trainY <- train_ida2 %>%
+  select(IDA2.Price) %>%
+  pull()
+
+# create train/test indexes which will be used in 5-Fold CV
+IDA2_Folds <- createFolds(IDA2_trainY, k=5)
+
+# create unique configuration which will be shared across all regression models
+IDA2_ctrl <- trainControl(
+  method = 'cv',
+  number = 5,
+  index = IDA2_Folds,
+  verboseIter = TRUE,
+  savePredictions = TRUE,
+  preProcOptions = list(thresh = 0.8)
+)
+```
+
+
+```{r fig.height=3}
+#Model
+set.seed(123)
+#Linear Regression - DAM
+model_lm_IDA2 <- train(
+  x = IDA2_trainX, # predictors dataset
+  y = IDA2_trainY, # response variable
+  method = "lm", # ML algorithm: rpart, knn, nb, ranger, glm, lm, etc. 
+  trControl = IDA2_ctrl, # training configuration
+  preProcess = c("zv", "center", "scale") # zv - remove predictors with zero variance
+                                          # center, scale - centering and scaling data 
+)
+model_lm_IDA2
+plot(varImp(model_lm_IDA2),8, main="Fig 14: Important Variable of LM for IDA2")
+summary(model_lm_IDA2$finalModel)
+```
+
+
+####Random Forest for IDA2
+
+The R-squared value for Random forest is 0.7210797 and is more accurate than the above Linear model. The important variables that impact this model are as shown below (see Fig 15):
+
+
+```{r fig.height=3}
+model_ranger_IDA2 <- train(
+  x = IDA2_trainX, # predictors dataset
+  y = IDA2_trainY, # response variable
+  method = "ranger", # ML algorithm: rpart, knn, nb, ranger, glm, lm, etc. 
+  trControl = IDA2_ctrl, # training configuration
+  importance = "impurity",
+  preProcess = c("zv", "center", "scale") # zv - remove predictors with zero variance
+                                          # center, scale - centering and scaling data 
+)
+model_ranger_IDA2
+
+plot(varImp(model_ranger_IDA2),main="Fig 15: Important Variable of Random Forest for IDA2")
+```
+
+####Comparision for IDA2
+
+The below dot plot(Fig 16), shows that the RMSE for linear model is highier compared to random forest, which clearly indicates that the random forest provides more accurate predictions compared to Linear model of IDA2
+
+```{r fig.height=4}
+#Resample - IDA2
+IDA2_resample <- resamples(
+  list(
+    lm_default = model_lm_IDA2,
+    ranger_default = model_ranger_IDA2
+  )
+)
+
+summary(IDA2_resample)
+dotplot(IDA2_resample,  main = "Fig 16 Dot plot: Resample for IDA2")
+```
+```{r include=FALSE}
+#bw plot for IDA2
+bwplot(IDA2_resample)
+```
+
+
+###IDA3
+####Linear model for IDA3:
+
+Similar to the previous data partitions, the first 5 months(October,2018 to February,2019) entries from the IDA3 dataset are placed in the train dataset, leaving the last month data whihc is March, 2019 is copies to the test dataset. A Linear regression model is being fit to the train dataset which includes the 5months data and the model is being trained. The obtained R-squared value for this Linear model is 0.5388. The variables that influence this model are as shown in the below plot (see Fig 17):
+```{r}
+#Splitting data into train and test.
+#train data : 5months data from october, 2018 to Feb,2019
+train_ida3 <- IDA3_df %>% filter(Period.Ending<"2019-03-01")
+
+#test data : 1 month data (March 2019), to be predicted
+test_ida3 <- IDA3_df %>% filter(Period.Ending>="2019-03-01")
+
+#train X without response variable
+IDA3_trainX <- train_ida3 %>%
+  select(-IDA3.Price)
+
+#train y: only response variable
+IDA3_trainY <- train_ida3 %>%
+  select(IDA3.Price) %>%
+  pull()
+
+# create train/test indexes which will be used in 5-Fold CV
+IDA3_Folds <- createFolds(IDA3_trainY, k=5)
+
+
+# create unique configuration which will be shared across all regression models
+IDA3_ctrl <- trainControl(
+  method = 'cv',
+  number = 5,
+  index = IDA3_Folds,
+  verboseIter = TRUE,
+  savePredictions = TRUE,
+  preProcOptions = list(thresh = 0.80)
+)
+```
+
+
+
+```{r fig.height=2.5}
+#Model
+set.seed(123)
+#Linear Regression - DAM
+model_lm_IDA3 <- train(
+  x = IDA3_trainX, # predictors dataset
+  y = IDA3_trainY, # response variable
+  method = "lm", # ML algorithm: rpart, knn, nb, ranger, glm, lm, etc. 
+  trControl = IDA3_ctrl, # training configuration
+  preProcess = c("zv", "center", "scale") # zv - remove predictors with zero variance
+                                          # center, scale - centering and scaling data 
+)
+model_lm_IDA3
+plot(varImp(model_lm_IDA3),8, main="Fig 17: Important Variable of LM for IDA3")
+summary(model_lm_IDA3$finalModel)
+```
+
+####Random Forest for IDA3
+
+From above Linear model for IDA3, the obtained R-squared is comparitively low when compared to the value for Random forest model which reads 0.7210797. Thus, Random forest shows more accurate  predictions compared to the Linear model of IDA3. The variables that play a vital role in this model for prediction are as shown below (see Fig 18):
+
+
+
+```{r fig.height=2.5}
+model_ranger_IDA3 <- train(
+  x = IDA3_trainX, # predictors dataset
+  y = IDA3_trainY, # response variable
+  method = "ranger", # ML algorithm: rpart, knn, nb, ranger, glm, lm, etc. 
+  trControl = IDA3_ctrl, # training configuration
+  importance = "impurity",
+  preProcess = c("zv", "center", "scale") # zv - remove predictors with zero variance
+                                          # center, scale - centering and scaling data 
+)
+
+
+plot(varImp(model_ranger_IDA3),main="Fig 18: Important Variable of Random Forest for IDA3")
+```
+
+####Comparision for IDA3
+
+On comparing the linear model and random forest by using resamples function in r, the RMSE value which should be as low as possible, seems to be in favour of Random forest, as shown in Fig 19, proving that Random forest gives more accurate predictions for the given data.
+
+```{r fig.height=2.5}
+#Resample - IDA3
+IDA3_resample <- resamples(
+  list(
+    lm_default = model_lm_IDA3,
+    ranger_default = model_ranger_IDA3
+  )
+)
+
+summary(IDA3_resample)
+dotplot(IDA3_resample,  main = "Fig 19 Dot plot: Resample for IDA3")
+```
+```{r include=FALSE}
+#bw plot for IDA3
+bwplot(IDA3_resample)
+```
+
+###Prediction using Test data:
+
+Now that the best model has been decided, the test data is utilized as prediction data and given as input to the random forest model for every market. The output for all the market resulted in giving a promising result. This is graphically illustrated as shown in the below line graphs, where the actual output is represented by black line and the predicted output is shown in red line. 
+
+```{r}
+#Predicting price for DAM market for the test data using the random forest model.
+preds_price_DAM <- predict(model_ranger_DAM, newdata = select(test_dam, -DA.Price))
+RMSE(pred = preds_price_DAM, obs = test_dam$DA.Price)
+R2(pred = preds_price_DAM, obs = select(test_dam, DA.Price))
+
+#Plot
+plot1 <- data.frame(
+  id = 1:length(test_dam$DA.Price),
+  observed = test_dam$DA.Price,
+  predicted = preds_price_DAM
+) %>% 
+  ggplot() +
+  geom_line(aes(x = id, y = observed)) +
+  geom_line(aes(x = id, y = predicted), colour = "red")+
+  ggtitle("Fig 20.1: DAM")+ theme(plot.title = element_text(hjust = 0.5))
+
+predictedDAM <- data.frame("Period.Ending" = test_dam$Period.Ending, "DAM.Price" = preds_price_DAM)
+```
+
+```{r}
+#Predicting price for IDA1 market for the test data using the random forest model.
+preds_price_IDA1 <- predict(model_ranger_IDA1, newdata = select(test_ida1, -IDA1.Price))
+RMSE(pred = preds_price_IDA1, obs = test_ida1$IDA1.Price)
+R2(pred = preds_price_IDA1, obs = select(test_ida1, IDA1.Price))
+
+#Ploting observed vs predicted price for IDA1 market
+plot2 <- data.frame(
+  id = 1:length(test_ida1$IDA1.Price),
+  observed = test_ida1$IDA1.Price,
+  predicted = preds_price_IDA1
+) %>% 
+  ggplot() +
+  geom_line(aes(x = id, y = observed)) +
+  geom_line(aes(x = id, y = predicted), colour = "red")+
+  ggtitle("Fig 20.2: IDA1")+ theme(plot.title = element_text(hjust = 0.5))
+  
+predictedIDA1 <- data.frame("Period.Ending" = test_ida1$Period.Ending, "IDA1.Price" = preds_price_IDA1)
+```
+
+```{r}
+#Predicting price for IDA2 market for the test data using the random forest model.
+preds_price_IDA2 <- predict(model_ranger_IDA2, newdata = select(test_ida2, -IDA2.Price))
+RMSE(pred = preds_price_IDA2, obs = test_ida2$IDA2.Price)
+R2(pred = preds_price_IDA2, obs = select(test_ida2, IDA2.Price))
+
+#Ploting observed vs predicted price for IDA2 market
+plot3 <- data.frame(
+  id = 1:length(test_ida2$IDA2.Price),
+  observed = test_ida2$IDA2.Price,
+  predicted = preds_price_IDA2
+) %>% 
+  ggplot() +
+  geom_line(aes(x = id, y = observed)) +
+  geom_line(aes(x = id, y = predicted), colour = "red")+
+  ggtitle("Fig 20.3: IDA2")+ theme(plot.title = element_text(hjust = 0.5))
+
+predictedIDA2 <- data.frame("Period.Ending" = test_ida2$Period.Ending, "IDA2.Price" = preds_price_IDA2)
+```
+
+```{r}
+#Predicting price for IDA3 market for the test data using the random forest model.
+preds_price_IDA3 <- predict(model_ranger_IDA3, newdata = select(test_ida3, -IDA3.Price))
+RMSE(pred = preds_price_IDA3, obs = test_ida3$IDA3.Price)
+R2(pred = preds_price_IDA3, obs = select(test_ida3, IDA3.Price))
+
+#Ploting observed vs predicted price for IDA3 market
+plot4 <- data.frame(
+  id = 1:length(test_ida3$IDA3.Price),
+  observed = test_ida3$IDA3.Price,
+  predicted = preds_price_IDA3
+) %>% 
+  ggplot() +
+  geom_line(aes(x = id, y = observed)) +
+  geom_line(aes(x = id, y = predicted), colour = "red")+
+  ggtitle("Fig 20.4: IDA3")+ theme(plot.title = element_text(hjust = 0.5))
+
+predictedIDA3 <- data.frame("Period.Ending" = test_ida3$Period.Ending, "IDA3.Price" = preds_price_IDA3)
+```
+
+```{r fig.height=4}
+#plotting all observed vs predicted graphs together
+grid.arrange(plot1, plot2, plot3, plot4, ncol=2, nrow=2, bottom="Fig 20: Oberserved vs Predicted graph" )
+
+```
+
+##Results and Findings
+```{r}
+#Comparison of price between markets
+merge_dam_ida1 <- merge(predictedDAM, predictedIDA1, by='Period.Ending', all = TRUE)
+merge_ida2_ida3 <- merge(predictedIDA2, predictedIDA3, by='Period.Ending', all = TRUE)
+merged_prediction <- merge(merge_dam_ida1, merge_ida2_ida3, by='Period.Ending', all = TRUE)
+
+#merging all the predicted prices.
+merged_pred <- merged_prediction %>%
+  select(-Period.Ending)
+
+merged_prediction$BestMarket <-  colnames(merged_pred)[apply(merged_pred,1,which.min)]
+#To not display exponent values
+options(scipen = 999)
+
+final_predicted_data <- merged_prediction %>%
+  mutate(BestMarketPrice = pmin(DAM.Price, IDA1.Price, IDA2.Price, IDA3.Price, na.rm = TRUE))
+#Predicted data using Random forest model
+final_predicted_data$Period.Ending <- test_dam$Period.Ending
+```
+
+
+Using the Random forest model, the values, have been predicted for the month of March,2019. Now, lets see which price and market are better for buying the electricity optimally (see table 8). The above table shows the Best Market for every 30mins time slot, which Energia can bid to get the best price. On comaparing with the oberserved data from Energia for the month of March 2019, plotting the graph for a day (2019-03-03 10:00:00 to 2019-03-04 10:00:00), shows the optimal price predicted.   
+
+```{r results=TRUE, fig.width=4}
+filter_predictions <- final_predicted_data %>% filter(Period.Ending <"2019-03-01 22:00:00" & Period.Ending >"2019-03-01 19:00:00")
+knitr::kable(filter_predictions ,format = "latex", booktabs = TRUE, caption = "Best market and price predicted for March, 2019") 
+
+```
+
+```{r}
+#R chunk to display observed price and predicted prices along with the best market for both.
+#merging all the predicted prices.
+observed_data <- energia_data %>% select(Period.Ending,DA.Price, IDA1.Price, IDA2.Price, IDA3.Price) %>%  filter(Period.Ending>="2019-03-01")
+
+observed_pred <- energia_data %>%
+  filter(Period.Ending>="2019-03-01")%>% 
+  select(-c(Period.Ending,BM.Price) )
+
+observed_data$BestMarket_Obs <-  colnames(observed_pred)[apply(observed_pred,1,which.min)]
+#To not display exponent values
+options(scipen = 999)
+
+final_observed_data <- observed_data %>%
+  mutate(BestMarketPrice_obs = pmin(DA.Price, IDA1.Price, IDA2.Price, IDA3.Price, na.rm = TRUE))
+#adding Period.ending column
+final_observed_data$Period.Ending <- test_dam$Period.Ending
+
+
+select_col_obs <- final_observed_data %>% select(Period.Ending,BestMarket_Obs,BestMarketPrice_obs)
+
+select_col_pre <- final_predicted_data %>% select(Period.Ending,BestMarket,BestMarketPrice)
+
+best_market_table <- merge(select_col_obs,select_col_pre, by="Period.Ending", all = TRUE)
+head(best_market_table,20)
+```
+
+```{r fig.height=4}
+
+Observed_price <-  select_col_obs %>%
+   group_by(Period.Ending) %>%
+  summarise(price = mean(BestMarketPrice_obs))
+
+predicted_price <-  select_col_pre %>%
+   group_by(Period.Ending) %>%
+  summarise(price = mean(BestMarketPrice))
+
+filter_obs_price <-  Observed_price %>% filter(Period.Ending> "2019-03-03 10:00:00" & Period.Ending< "2019-03-04 10:00:00")
+filter_pred_price <-  predicted_price %>% filter(Period.Ending> "2019-03-03 10:00:00" & Period.Ending< "2019-03-04 10:00:00")
+
+plot(filter_obs_price, type='o', col='red', xlab='Month', ylab='Price', main ="Fig 21: Observed price Vs Predicted price for a day") +
+  lines(filter_pred_price, type='o', col='blue') 
+
+legend(c("topright"), legend=c("Observed Price", "Predicted Price"),
+       col=c( "red","blue"),lty=1:2, cex=0.8)
+
+
+```
+##Conclusion
+
+As conclusion, responding to the problem statement which Energia is facing:
+1) Assume Energia have 100MW of electricity to buy in each half hour of the day. How can Energia optimise the purchases in ISEM? What factors drive this decision? 
+ *Solution:Energia can use the above model to predict the best market for every 30mins interval and optimise their purchase. The above graph (Fig 21) represents that Predicted price(in blue) is more cheaper than the forecasted price(in red) is the factor which drives this decision of choosing the above predicted best market.*
+ .  
+2) Can Energia increase profitability by speculating across the markets by trading more actively?
+ *Solution: Energia can increase profit by choosing the market based on the above prediction market and buy electricity for more less price as show in Fig 21.*
+
